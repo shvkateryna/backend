@@ -1,3 +1,4 @@
+import os
 import sys
 import torch
 import numpy as np
@@ -6,10 +7,11 @@ from PIL import Image
 import cv2
 import facer
 
-def cut_element_from_image(image_pil, mask_np):
-    if mask_np.shape != image_pil.size[::-1]:
+def cut_element_from_image(image_path, mask_np):
+    image = Image.open(image_path).convert('RGBA')
+    if mask_np.shape != image.size[::-1]:
         raise ValueError("Provided mask array must match the image size.")
-    image_np = np.array(image_pil.convert("RGBA"))
+    image_np = np.array(image)
     alpha = (mask_np > 0).astype(np.uint8) * 255
     result = image_np.copy()
     result[..., 3] = alpha
@@ -31,22 +33,19 @@ def get_average_color_from_masked_image(image_pil):
     avg_color = np.mean(image_hsv.reshape(-1, 3), axis=0)
     return avg_color
 
-def main(file_like_obj):
+def main(image_path):
     sys.path.append('..')
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     face_detector = facer.face_detector('retinaface/mobilenet', device=device)
     face_parser = facer.face_parser('farl/celebm/448', device=device)
 
-    image_pil = Image.open(file_like_obj)
-    image_np = np.array(image_pil.convert("RGB"))
-    img_tensor = facer.hwc2bchw(image_np).to(device=device)
-
+    img_tensor = facer.hwc2bchw(facer.read_hwc(image_path)).to(device=device)
     with torch.inference_mode():
         faces = face_detector(img_tensor)
 
     if len(faces) == 0:
-        print("No faces detected, skipping.")
+        print(f"No faces detected in {image_path}, skipping.")
         return None
 
     with torch.inference_mode():
@@ -62,7 +61,9 @@ def main(file_like_obj):
         'r_eye': 're'
     }
 
-    result = {}
+    result = {
+        'file_name': os.path.splitext(os.path.basename(image_path))[0]
+    }
 
     for face_idx in range(len(seg_preds)):
         seg_pred = seg_preds[face_idx]
@@ -79,14 +80,14 @@ def main(file_like_obj):
                 )
 
                 mask_np = (unwarped_mask[0, 0].cpu().numpy() * 255).astype(np.uint8)
-                cut_img = cut_element_from_image(image_pil, mask_np)
+                cut_img = cut_element_from_image(image_path, mask_np)
 
-                # --- Зміна фону на чорний ---
+                # --- Change background to black ---
                 if cut_img.mode != "RGBA":
                     cut_img = cut_img.convert("RGBA")
                 black_bg = Image.new("RGBA", cut_img.size, (0, 0, 0, 255))
                 cut_img = Image.alpha_composite(black_bg, cut_img).convert("RGB")
-                # ----------------------------
+                # -----------------------------------
 
                 avg_color = get_average_color_from_masked_image(cut_img)
                 result[f"{part}_H"] = avg_color[0]
@@ -94,12 +95,14 @@ def main(file_like_obj):
                 result[f"{part}_V"] = avg_color[2]
             else:
                 print(f"Label '{label}' not found in label_names.")
-        
-        eyes_color = np.mean([[result["l_eye_H"], result["l_eye_S"], result["l_eye_V"]],
-                              [result["r_eye_H"], result["r_eye_S"], result["r_eye_V"]]], axis=0)
-        result["eyes_H"], result["eyes_S"], result["eyes_V"] = eyes_color
+            
+        print(result)
+        eyes_color = np.mean([[result["l_eye_H"], result["l_eye_S"], result["l_eye_V"]], [result["r_eye_H"], result["r_eye_S"], result["r_eye_V"]]], axis = 0)
+        result["eyes_H"] = eyes_color[0]
+        result["eyes_S"] = eyes_color[1]
+        result["eyes_V"] = eyes_color[2]
 
-    # Contrast features
+    # Add contrast features
     try:
         skin_V = result['face_V']
         hair_V = result['hair_V']
@@ -111,15 +114,21 @@ def main(file_like_obj):
         eyes_S = result.get('l_eye_S', 0)
         result['saturation_contrast'] = max(skin_S, hair_S, eyes_S) - min(skin_S, hair_S, eyes_S)
     except KeyError as e:
-        print(f"Missing value for contrast calculation: {e}")
+        print(f"Missing value for contrast calculation in {image_path}: {e}")
         result['contrast_score'] = 0
         result['saturation_contrast'] = 0
+    
+    result.pop('r_eye_H')
+    result.pop('r_eye_S')
+    result.pop('r_eye_V')
+    result.pop('l_eye_H')
+    result.pop('l_eye_S')
+    result.pop('l_eye_V')
 
-    # Remove intermediate keys
-    for k in ['r_eye_H', 'r_eye_S', 'r_eye_V', 'l_eye_H', 'l_eye_S', 'l_eye_V']:
-        result.pop(k, None)
-
+    print(f"Finished processing {image_path}")
+    print(result)
     return result
 
-def extract_features(file_like_obj):
-    return main(file_like_obj)
+# на самому кінці preparation.py
+def extract_features(image_path: str) -> dict:
+    return main(image_path)
