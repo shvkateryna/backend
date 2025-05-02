@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pandas
+numpy
+xgboost
+python-multipart
+opencv-python
+Pillow
+torch
+git+https://github.com/FacePerceiver/facer.git@main
