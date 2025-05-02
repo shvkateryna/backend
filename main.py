@@ -1,14 +1,12 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import shutil
-import os
 import traceback
 import pandas as pd
-
-import preparation
 import xgboost as xgb
 import numpy as np
+import preparation
+import io
 
 app = FastAPI()
 
@@ -25,22 +23,21 @@ booster = xgb.Booster()
 booster.load_model("color_type_model.json")
 print("✅ Booster loaded!")
 
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
 @app.post("/analyze/")
 async def analyze(file: UploadFile = File(...)):
     print("🔔 /analyze endpoint HIT")
-    file_location = os.path.join(UPLOAD_FOLDER, file.filename)
-    with open(file_location, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
 
     try:
-        features_dict = preparation.extract_features(file_location)
+        # Читаємо файл у памʼять
+        contents = await file.read()
+        image_stream = io.BytesIO(contents)
+
+        # Ваша функція має приймати file-like обʼєкт
+        features_dict = preparation.extract_features(image_stream)
         if not features_dict:
             return JSONResponse(status_code=400, content={"error": "Face not detected"})
 
-        # Список колонок у правильному порядку
+        # Колонки в правильному порядку
         columns = [
             "skin_H", "skin_S", "skin_V",
             "hair_H", "hair_S", "hair_V",
@@ -52,7 +49,7 @@ async def analyze(file: UploadFile = File(...)):
         print("👀 Features:", features_array)
 
         df = pd.DataFrame([features_array], columns=columns)
-        dinput = xgb.DMatrix(df, feature_names=columns) 
+        dinput = xgb.DMatrix(df, feature_names=columns)
         pred_probs = booster.predict(dinput)
         predicted_class = int(np.argmax(pred_probs))
 
