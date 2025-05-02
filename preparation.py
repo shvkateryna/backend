@@ -1,3 +1,36 @@
+import sys
+import torch
+import numpy as np
+import torch.nn.functional as F
+from PIL import Image
+import cv2
+import facer
+
+def cut_element_from_image(image_pil, mask_np):
+    if mask_np.shape != image_pil.size[::-1]:
+        raise ValueError("Provided mask array must match the image size.")
+    image_np = np.array(image_pil.convert("RGBA"))
+    alpha = (mask_np > 0).astype(np.uint8) * 255
+    result = image_np.copy()
+    result[..., 3] = alpha
+    return Image.fromarray(result)
+
+def get_average_color_from_masked_image(image_pil):
+    image_np = np.array(image_pil.convert("RGB"))
+    if image_np.shape[2] == 4:
+        alpha = image_np[..., 3]
+        mask = alpha > 0
+        if not mask.any():
+            return np.array([0, 0, 0])
+        image_np = image_np[..., :3]
+    else:
+        mask = np.ones(image_np.shape[:2], dtype=bool)
+
+    masked_pixels = image_np[mask]
+    image_hsv = cv2.cvtColor(masked_pixels.reshape(-1, 1, 3), cv2.COLOR_RGB2HSV)
+    avg_color = np.mean(image_hsv.reshape(-1, 3), axis=0)
+    return avg_color
+
 def main(file_like_obj):
     sys.path.append('..')
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -5,7 +38,6 @@ def main(file_like_obj):
     face_detector = facer.face_detector('retinaface/mobilenet', device=device)
     face_parser = facer.face_parser('farl/celebm/448', device=device)
 
-    # 💡 читаємо зображення напряму з потоку, без збереження на диск
     image_pil = Image.open(file_like_obj)
     image_np = np.array(image_pil.convert("RGB"))
     img_tensor = facer.hwc2bchw(image_np).to(device=device)
@@ -67,6 +99,7 @@ def main(file_like_obj):
                               [result["r_eye_H"], result["r_eye_S"], result["r_eye_V"]]], axis=0)
         result["eyes_H"], result["eyes_S"], result["eyes_V"] = eyes_color
 
+    # Contrast features
     try:
         skin_V = result['face_V']
         hair_V = result['hair_V']
@@ -82,8 +115,11 @@ def main(file_like_obj):
         result['contrast_score'] = 0
         result['saturation_contrast'] = 0
 
-    # Видаляємо проміжні ключі очей
+    # Remove intermediate keys
     for k in ['r_eye_H', 'r_eye_S', 'r_eye_V', 'l_eye_H', 'l_eye_S', 'l_eye_V']:
         result.pop(k, None)
 
     return result
+
+def extract_features(file_like_obj):
+    return main(file_like_obj)
